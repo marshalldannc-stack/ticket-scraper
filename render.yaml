@@ -1,0 +1,5 @@
+services:
+  - type: web
+    name: ticket-scraper
+    runtime: docker
+    plan: free
