@@ -1,5 +1,5 @@
 const express = require("express");
-const axios = require("axios");
+const puppeteer = require("puppeteer-core");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -8,47 +8,33 @@ app.get("/scrape", async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: "No URL provided" });
 
+  let browser;
   try {
-    const response = await axios.get(url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml",
-        "Accept-Language": "en-US,en;q=0.9"
-      },
-      timeout: 20000
+    browser = await puppeteer.connect({
+      browserWSEndpoint: "wss://brd-customer-hl_c0589124-zone-scraping_browser1:drnr905774ht@brd.superproxy.io:9222",
     });
-    
-    const html = response.data;
-    let min = null;
-    let max = null;
+    const page = await browser.newPage();
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+    await page.waitForTimeout(5000);
 
-    const priceMatch = html.match(/"priceRanges":\[[\s\S]*?\]/);
-    if (priceMatch) {
-      try {
-        const json = JSON.parse(`{${priceMatch[0]}}`);
-        if (json.priceRanges?.[0]) {
-          min = json.priceRanges[0].min;
-          max = json.priceRanges[0].max;
-        }
-      } catch {}
-    }
+    const html = await page.content();
+    const priceMatches = html.match(/\$[\d,]+/g) || [];
+    const prices = priceMatches
+      .map(p => parseFloat(p.replace(/[$,]/g, "")))
+      .filter(p => p > 10 && p < 100000)
+      .sort((a, b) => a - b);
 
-    if (!min) {
-      const minMatch = html.match(/"min":(\d+\.?\d*)/);
-      const maxMatch = html.match(/"max":(\d+\.?\d*)/);
-      if (minMatch) {
-        min = parseFloat(minMatch[1]);
-        max = maxMatch ? parseFloat(maxMatch[1]) : min;
-      }
-    }
-
-    if (min) {
-      res.json({ min, max: max || min });
+    if (prices.length >= 2) {
+      res.json({ min: prices[0], max: prices[prices.length - 1] });
+    } else if (prices.length === 1) {
+      res.json({ min: prices[0], max: prices[0] });
     } else {
       res.json({ error: "Price not found" });
     }
   } catch (e) {
     res.status(500).json({ error: "Scrape failed" });
+  } finally {
+    if (browser) await browser.close();
   }
 });
 
