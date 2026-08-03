@@ -1,5 +1,6 @@
 const express = require("express");
-const puppeteer = require("puppeteer");
+const axios = require("axios");
+const cheerio = require("cheerio");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -8,52 +9,31 @@ app.get("/scrape", async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: "No URL provided" });
 
-  let browser;
   try {
-    browser = await puppeteer.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    const response = await axios.get(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      },
+      timeout: 15000
     });
-    const page = await browser.newPage();
-    await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
-    await page.goto(url, { waitUntil: "networkidle0", timeout: 60000 });
-    await page.waitForTimeout(5000);
-
-    const html = await page.content();
     
-    // Try multiple patterns
+    const html = response.data;
     let min = null;
     let max = null;
 
-    // Pattern 1: JSON script tag
-    const jsonMatch = html.match(/<script[^>]*type="application\/json"[^>]*>([\s\S]*?)<\/script>/gi);
-    if (jsonMatch) {
-      for (const script of jsonMatch) {
-        const inner = script.replace(/<[^>]*>/g, "");
-        try {
-          const data = JSON.parse(inner);
-          if (data?.offers?.priceRanges) {
-            min = data.offers.priceRanges[0].min;
-            max = data.offers.priceRanges[0].max;
-            break;
-          }
-        } catch {}
-      }
-    }
-
-    // Pattern 2: priceRanges in any JSON
-    if (!min) {
-      const priceMatch = html.match(/"priceRanges":\s*\[[\s\S]*?\]/);
-      if (priceMatch) {
-        const ranges = JSON.parse(`{${priceMatch[0]}}`).priceRanges;
-        if (ranges?.[0]) {
-          min = ranges[0].min;
-          max = ranges[0].max;
+    // Look for priceRanges in script tags
+    const scriptMatch = html.match(/"priceRanges":\[[\s\S]*?\]/);
+    if (scriptMatch) {
+      try {
+        const json = JSON.parse(`{${scriptMatch[0]}}`);
+        if (json.priceRanges?.[0]) {
+          min = json.priceRanges[0].min;
+          max = json.priceRanges[0].max;
         }
-      }
+      } catch {}
     }
 
-    // Pattern 3: min/max in any script
+    // Try min/max in any context
     if (!min) {
       const minMatch = html.match(/"min":(\d+\.?\d*)/);
       const maxMatch = html.match(/"max":(\d+\.?\d*)/);
@@ -70,8 +50,6 @@ app.get("/scrape", async (req, res) => {
     }
   } catch (e) {
     res.status(500).json({ error: "Scrape failed" });
-  } finally {
-    if (browser) await browser.close();
   }
 });
 
